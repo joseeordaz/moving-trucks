@@ -1,5 +1,7 @@
 # City of Boston's Moving Truck Permits Analysis and Forecasting
+
 ## Contributors: Ria, Jose, Samantha
+
 ## Date: 02/05/2023
 
 ### Introduction:
