@@ -1,0 +1,704 @@
+---
+title: "MA611 Group Project: Moving Trucks"
+author: "Ria, Jose, Samantha"
+date: "02/05/2023"
+output:
+  prettydoc::html_pretty:
+    theme: hpstr
+    highlight: github
+---
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(tidyverse)
+library(fpp2)
+library(knitr)
+library(FinTS)
+library(tseries)
+library(kableExtra)
+library(neuralnet)
+data = read.csv('truckpermits.csv')
+```
+## Introduction
+
+The City of Boston's Moving Truck Permits dataset is a valuable resource for understanding the flow of commercial and non-commercial trucks throughout the city. This dataset contains detailed information on the issuance of permits for moving trucks, which can be used by researchers and policymakers to identify patterns and trends in the transportation of goods and services. By analyzing this data, strategies can be developed to improve transportation infrastructure and alleviate traffic congestion.
+
+The purpose of this notebook is to analyze the dataset of Moving Truck Permits obtained from the Open Data Portal of the City of Boston, a digital platform that offers unrestricted and cost-free entry to numerous datasets accumulated and managed by the City of Boston. We will start by proving the existence of seasonality and trend in the dataset using a decomposition model. Then, we will apply various modeling techniques, such as exponential smoothing models, ARIMA, linear regression, and neural networks, to forecast the number of permits. Finally, we will compare the performance of these models to select the best one for predicting the future issuance of moving truck permits in Boston.
+
+By conducting a comprehensive analysis and comparison of different forecasting models, we aim to provide insights into the most suitable modeling approach for this dataset, which can help researchers and policymakers make informed decisions regarding transportation planning and resource allocation in the city.
+
+## Monthly Moving Truck Permits Issued April 2012 - April 2023
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+data$issued_date <- ymd_hms(data$issued_date)
+
+data_agg <- data %>%
+  mutate(date_only = as.Date(issued_date)) %>%
+  group_by(date_only) %>%
+  summarise(count = n())
+
+# Daily Aggregation
+start_date <- as.Date("2012-04-03")
+end_date <- as.Date("2023-04-27")
+all_dates <- data.frame(date_only = seq(start_date, end_date, by = "day"))
+
+data_agg_complete <- all_dates %>%
+  left_join(data_agg, by = "date_only") %>%
+  replace_na(list(count = 0))
+
+# Monthly aggregation time series
+
+data_agg_complete <- data_agg_complete %>%
+  mutate(month = month(date_only),
+         year = year(date_only)) %>%
+  group_by(year, month) %>%
+  summarise(count = sum(count))
+
+trucks.monthly.ts <- ts(data_agg_complete$count, start = c(2012, 4), frequency = 12)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+
+
+fig2 = autoplot(trucks.monthly.ts) + 
+  ggtitle("Moving Truck Permits Issued in Boston") +
+  xlab("Year") +
+  ylab("Number of Permits Issued")
+print(fig2)
+
+```
+
+
+### Qualitative Description
+
+**Seasonality:** The time series plot of moving truck permits in Boston reveals a seasonal trend, with a higher number of permits being issued during summer months and a lower number during winter months. This pattern can likely be attributed to a combination of factors. Favorable weather conditions in the summer and the conclusion of the academic year make it an attractive time for moving. Conversely, colder weather and challenging driving conditions during winter may discourage moving activity.
+
+**Trend:** The plots indicate an increasing trend in the number of permits issued over time, with more permits issued in recent years compared to earlier years. Notably, there are spikes in permit issuance during late May and early June of 2016 and 2017, which may be attributed to an increase in moving activity during these periods. Conversely, the dip in permit issuance during early 2020 is likely due to the COVID-19 pandemic and the associated restrictions on moving and other activities.
+
+To provide a more detailed picture, we can examine specific periods and permit counts. For example, in August 2012, there were 2,867 permits issued, whereas in August 2021, the number increased to 5,521 permits. This growth trend is also evident in other months, such as May, with 1,284 permits in 2012 and 2,407 permits in 2021. However, there is a noticeable dip in permit issuance in April 2020, with only 589 permits issued, compared to 1,115 permits in April 2019 and 1,548 permits in April 2021. This decline is likely due to the impact of the COVID-19 pandemic on moving activities.
+
+
+### Decompostion Model: 
+
+Decomposition models can be used to express a time series based on its properties and then fit the model to our data set. We use additive decomposition since we observe seasonality without rapid changes in trend.
+
+The time series is broken down into its trend, seasonal, and random components. The trend component shows the overall direction of the time series, which is increasing over the years. The seasonal component displays the regular pattern that repeats every year, with a higher number of permits issued during the summer months and a lower number during the winter months. The random component represents the fluctuations around the trend and seasonal patterns.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+
+truck.decomp = decompose(trucks.monthly.ts)
+autoplot(truck.decomp,xlab="Years")
+
+```
+
+The seasonality strength (SS) and trend strength (ST) are measures of how well the seasonal and trend components explain the variability in the time series, respectively. The higher the value of SS or ST, the stronger the seasonal or trend component. The calculated value of ST is 0.44, indicating a moderate trend, and the calculated value of SS is 0.96, indicating strong seasonality.
+
+By building models that account for both trend and seasonality, we can better capture the underlying patterns in the data and provide more accurate forecasts for the number of moving truck permits.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.align='center', out.width='70%'}
+
+ST = 1- var(truck.decomp$random, na.rm = T) / var(truck.decomp$trend + truck.decomp$random, na.rm = T)
+SS= 1- var(truck.decomp$random, na.rm = T) / var(truck.decomp$seasonal + truck.decomp$random, na.rm = T)
+# Create a data frame with the calculated values of ST and SS
+ST_SS_df <- data.frame(
+  Strength = c("Trend", "Seasonal"),
+  Value = c(ST, SS)
+)
+
+ST_SS_df %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+
+```
+
+## Models 
+
+### Exponential Smoothing Models
+
+Based on our analysis of the time series plot, contextual thinking, and the STL decomposition, we can be confident that there are both trend and seasonal components in our data. Therefore, a Holt-Winters model might be more suitable, as it can account for both trend and seasonality. A non-constant level model is appropriate when there is no trend or seasonality, and a Holt model is appropriate when there is trend but no seasonality. However, we will check the accuracy each model before making a final decision.
+
+To evaluate our strategies, we will focus on the following metrics:
+
+1. **Mean Absolute Error** 
+\[ 
+MAE = \frac{1}{n} \sum_{t=1}^{n} \left|  e^{2}_{t}\right|
+\]
+
+2. **Root Mean Squared Error**
+\[
+RMSE = \sqrt{\frac{1}{n} \sum_{t=1}^{n}e^{2}_{t}}
+\] 
+
+
+#### Accuracies
+
+```{r, echo=FALSE, fig.align='center'}
+
+truck.hw <- hw(trucks.monthly.ts)
+accuracy.hw <- accuracy(truck.hw)
+
+truck.ses= ses(trucks.monthly.ts)
+accuracy.ses<- accuracy(truck.ses)
+
+truck.holt = holt(trucks.monthly.ts)
+accuracy.holt<- accuracy(truck.holt)
+
+accuracy_combined <- rbind(accuracy.hw, accuracy.ses, accuracy.holt)
+rownames(accuracy_combined) <- c("Holt-Winters", "Simple Exponential Smoothing", "Holt's Linear Trend")
+accuracy_combined <- accuracy_combined[, c("RMSE", "MAE")]
+accuracy_table <- kable(accuracy_combined, caption = "Exponential Smoothing Models", digits = 2)
+kable_styling(accuracy_table, full_width = FALSE)
+
+```
+After comparing the performance of the three models, it is clear that the Holt-Winters model outperforms the other two models in terms of accuracy. This was expected since the Holt-Winters model accounts for both seasonality and trend in the data. On the other hand, the Holt and Non-Constant Level models show lower accuracy, indicating that they are less suitable for modeling the data. 
+
+#### Residuals
+
+Moving forward with the Holt-Winters Model, we should check if there is evidence of autocorrelation. To do this, we will check the residuals plot, the ACF plot of the residuals, and the ACF plot of the residuals squared.
+```{r, echo=FALSE, fig.align='center',warning=FALSE, message=FALSE}
+autoplot(resid(truck.hw))
+```
+The residuals appear to be approximately centered around zero. However, the residual variance appears to increase in the later years. We should check both ACF plots for evidence of autocorrelation.
+
+```{r echo=FALSE, fig.align='center'}
+ggAcf(resid(truck.hw))
+```
+
+
+```{r, echo=FALSE, fig.align='center',warning=FALSE, message=FALSE}
+ggAcf(resid(truck.hw)^2)
+```
+
+The ACF plot of the squared residuals squared of the Holt-Winters model shows evidence of autocorrelation and a wavy pattern, suggesting that there is some remaining structure in the residuals that the model has not captured. This implies that the model's assumptions about the error terms being independently and identically distributed might not hold true. In such cases, an ARCH (Autoregressive Conditional Heteroskedasticity) or GARCH (Generalized Autoregressive Conditional Heteroskedasticity) model may be suitable, as these models specifically account for the changing volatility and autocorrelation in the residuals. By considering an ARCH/GARCH model, we can better capture the underlying patterns in the data and potentially improve our forecasting accuracy.
+
+#### HW-GARCH
+
+The GARCH model's coefficients are as follows:
+```{r echo=FALSE}
+#ArchTest(resid(truck.hw))
+
+truck.hw.garch =garch(resid(truck.hw), trace=FALSE)
+
+coefficients_df <- data.frame(
+  Coefficient = c("a0", "a1", "b1"),
+  Estimate = c(5.386e+04, 1.906e-01, 4.778e-10),
+  `2.5%` = c(-642.3028678, -0.2007768, -1.0430676),
+  `97.5%` = c(1.083609e+05, 5.818903e-01, 1.043068e+00)
+)
+
+coefficients_df %>%
+  kable("html", digits = 3, align = "c", col.names = c("Coefficient", "Estimate", "2.5%", "97.5%")) %>%
+  kable_styling("basic", full_width = F)
+
+```
+The results of the ARCH LM-test (with a p-value of 0.0002066) reject the null hypothesis of no ARCH effects, further supporting the use of a GARCH model.
+
+These results show that the GARCH model captures the changing volatility and autocorrelation patterns in the residuals, which can lead to improved forecasting performance compared to the original Holt-Winters model.
+
+#### Improved Holt-Winters
+
+##### Accuracy
+
+```{r echo=FALSE}
+
+truck.hw.fitted <- fitted(truck.hw)
+garch.standardized.resid <- residuals(truck.hw.garch, standardize = TRUE)
+
+# Calculate the adjusted residuals using GARCH parameters
+garch.resid <- garch.standardized.resid * sqrt(truck.hw.garch$coef["a0"] + truck.hw.garch$coef["a1"] * (resid(truck.hw)^2) + truck.hw.garch$coef["b1"] * garch.standardized.resid^2)
+
+# Adjust the Holt-Winters fitted values with the GARCH residuals
+truck.hw.garch.fitted <- truck.hw.fitted + garch.resid
+
+# Compare the in-sample accuracy
+truck.hw.garch.fitted.acc = accuracy(truck.hw.garch.fitted, trucks.monthly.ts)
+truck.hw.garch.fitted.acc=t(truck.hw.garch.fitted.acc[, c("RMSE", "MAE")])
+
+truck.hw.garch.fitted.acc %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+
+
+```
+##### Plot
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+fig = autoplot(trucks.monthly.ts)+
+  autolayer(truck.hw.garch.fitted, series = "Improved HW")+
+  autolayer(fitted(truck.hw), series = "HW")
+print(fig)
+```
+
+By adjusting the Holt-Winters fitted values with the GARCH residuals, we managed to improve the model significantly. 
+
+#### Training-Testing
+
+We will now make another Holt-Winters model HW-GARCH model which will be used to compare with other models later in this notebook.
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+# Splitting data into test and train
+split_point <- round(length(trucks.monthly.ts) * 0.80)
+
+# Find the corresponding year and week for the split point
+split_year <- as.numeric(floor(time(trucks.monthly.ts)[split_point]))
+
+# Split the data into training and test sets
+train_data <- window(trucks.monthly.ts, end = c(split_year))
+test_data <- window(trucks.monthly.ts, start = c(split_year))
+
+
+truck.hw.train <- hw(train_data)
+truck.hw.garch.train <- garch(truck.hw.train$residuals, trace = FALSE)
+
+# Get the fitted values from the Holt-Winters model
+truck.hw.fitted <- fitted(truck.hw.train)
+
+# Calculate the standardized residuals from the GARCH model
+garch.standardized.resid <- residuals(truck.hw.garch.train, standardize = TRUE)
+
+# Calculate the adjusted residuals using GARCH parameters
+garch.resid <- garch.standardized.resid * sqrt(truck.hw.garch.train$coef["a0"] + truck.hw.garch.train$coef["a1"] * (resid(truck.hw.garch.train)^2) + truck.hw.garch.train$coef["b1"] * garch.standardized.resid^2)
+
+# Adjust the Holt-Winters fitted values with the GARCH residuals
+truck.hw.garch.train.fitted <- truck.hw.fitted + garch.resid
+
+# Forecast future values of the time series using the Holt-Winters model
+forecast_values_hw_garch <- forecast(truck.hw.garch.train.fitted, h = length(test_data))
+
+# Calculate the accuracy of the forecasted values on the training and test data using the Holt-Winters model
+accuracy_values_hw_garch_train <- accuracy(truck.hw.garch.train.fitted, train_data)
+accuracy_values_hw_garch_test <- accuracy(forecast_values_hw_garch$mean, test_data)
+
+# Combine the accuracy metrics for the Holt-Winters model on the training and test sets into a table
+truck.hw.garch.train.acc <- t(cbind("train set" = accuracy_values_hw_garch_train[, c( "RMSE", "MAE")], "test set" = accuracy_values_hw_garch_test[, c("RMSE", "MAE")]))
+truck.hw.garch.train.acc %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+```
+
+
+### Seasonal ARIMA
+
+Seasonal ARIMA (SARIMA) is used to model time series data with constant variance, seasonality, and non-constant level. Our dataset exhibits all of these characteristics, which makes SARIMA suitable for further analysis.
+
+```{r, echo=FALSE, fig.align='center',warning=FALSE, message=FALSE}
+truck.arima = auto.arima(trucks.monthly.ts, seasonal = TRUE, stepwise = FALSE, approximation = FALSE)
+
+accuracy_sarima <-accuracy(truck.arima)
+accuracy_sarima=t(accuracy_sarima[, c("RMSE", "MAE")])
+accuracy_sarima %>%
+ kable() %>%
+ kable_styling(full_width = FALSE)
+```
+
+The recommended SARIMA model provided by the auto.arima function has three autoregressive terms (AR=3) and zero moving average terms (MA=0). The seasonal component of the model includes two seasonal autoregressive terms (P=2), one seasonal differencing term (D=1), and zero seasonal moving average terms (Q=0), with a seasonal period of 12 months.
+
+```{r, echo=FALSE, fig.align='center',warning=FALSE, message=FALSE}
+# Coefficients table
+coef_table <- data.frame(Coefficients = coef(truck.arima),
+                         StdError = sqrt(diag(vcov(truck.arima))))
+coef_table %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+
+```
+Only **ar2** includes zero, suggesting that it may not be statistically significant. However, **ar3** is significant, so we will keep the ar2 term.
+```{r, echo=FALSE, fig.align='center',warning=FALSE, message=FALSE}
+# Confidence intervals table
+confint_table <- as.data.frame(confint(truck.arima))
+colnames(confint_table) <- c("2.5 %", "97.5 %")
+
+confint_table %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+
+```
+
+
+#### Residuals
+
+Following a similar process as the Holt-Winters model, we should carefully check for evidence of autocorrelation in the SARIMA model. 
+
+```{r, echo=FALSE, fig.align='center',warning=FALSE, message=FALSE}
+autoplot(resid(truck.arima))
+```
+
+The residual plot of the SARIMA model shows evidence of heteroskedasticity, which suggests that the model's assumptions about constant variance might not hold true. This could indicate that an alternative model that accounts for the changing variance, such as a GARCH model, may be more appropriate for this data.
+
+```{r, echo=FALSE, fig.align='center',warning=FALSE, message=FALSE}
+ggAcf(resid(truck.arima))
+ggAcf(resid(truck.arima)^2)
+```
+Similar to the HW model, the ACF plot of the squared residuals squared of the SARIMA model shows evidence of autocorrelation and a wavy pattern, suggesting that there is some remaining structure in the residuals that the model has not captured.
+
+#### SARIMA-GARCH 
+
+The p-value of the *ArchTest* is less than the typical significance level (0.05), we reject the null hypothesis, which suggests that there are ARCH effects in the residuals of the seasonal ARIMA model. This means that the model's error terms exhibit conditional heteroskedasticity. We will take care of this by using a GARCH model to account for this structure in the residuals.
+
+These are the coefficients of our SARIMA-GARCH model:
+```{r,echo=FALSE,include=FALSE}
+#ArchTest(resid(truck.arima))
+
+truck.arima.garch =garch(resid(truck.arima), trace=FALSE)
+
+
+# Extract the coefficients and their confidence intervals
+arima.garch.coef <- truck.arima.garch$coef
+arima.garch.confint <- confint(truck.arima.garch)
+
+# Combine the coefficients and confidence intervals into a single DataFrame
+arima.garch.coef.df <- data.frame(
+  Estimate = arima.garch.coef,
+  `2.5%` = arima.garch.confint[, 1],
+  `97.5%` = arima.garch.confint[, 2]
+)
+
+# Display the DataFrame using kable and kable_styling
+arima.garch.coef.df %>%
+  kable("html", digits = 3, align = "c", col.names = c("Estimate", "2.5%", "97.5%")) %>%
+  kable_styling("basic", full_width = F)
+```
+
+The coefficients include zero, which indicates that they may not be statistically significant. To decide if to proceed with the SARIMA-GARCH model, we will compare its accuracy to our previous model.
+
+#### Improved SARIMA Model
+
+##### Accuracy
+```{r, echo=FALSE, fig.align='center',warning=FALSE, message=FALSE}
+# Get the fitted values from the ARIMA model
+truck.arima.fitted <- fitted(truck.arima)
+
+# Calculate the standardized residuals from the GARCH model
+garch.standardized.resid <- residuals(truck.arima.garch, standardize = TRUE)
+
+# Calculate the adjusted residuals using GARCH parameters
+garch.resid <- garch.standardized.resid * sqrt(truck.arima.garch$coef["a0"] + truck.arima.garch$coef["a1"] * (resid(truck.arima)^2) + truck.arima.garch$coef["b1"] * garch.standardized.resid^2)
+
+# Adjust the ARIMA fitted values with the GARCH residuals
+truck.arima.garch.fitted <- truck.arima.fitted + garch.resid
+
+# Compare the in-sample accuracy
+truck.arima.garch.fitted.acc = accuracy(truck.arima.garch.fitted, trucks.monthly.ts)
+truck.arima.garch.fitted.acc=t(truck.arima.garch.fitted.acc[, c("RMSE", "MAE")])
+
+truck.arima.garch.fitted.acc %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+```
+##### Plot
+
+```{r, echo=FALSE, fig.align='center',warning=FALSE, message=FALSE}
+fig = autoplot(trucks.monthly.ts)+
+  autolayer(truck.arima.garch.fitted, series = "Improved SARIMA")+
+  autolayer(fitted(truck.arima), series = "SARIMA")
+print(fig)
+```
+By adjusting the SARIMA fitted values with the GARCH residuals, we managed to improve the model significantly. Thus, we will proceed with this improved version.
+
+#### Training-Testing
+
+Now we will fit another SARIMA-GARCH model only using 80% of the data which will be used later to compare with other models. 
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+trucks.arima.train <- Arima(train_data, order = c(3, 0, 0), seasonal = list(order = c(2, 1, 0), period = 12))
+trucks.arima.garch.train <- garch(trucks.arima.train$residuals, trace = FALSE)
+
+# Get the fitted values from the ARIMA model
+truck.arima.fitted <- fitted(trucks.arima.train)
+
+# Calculate the standardized residuals from the GARCH model
+garch.standardized.resid <- residuals(trucks.arima.garch.train, standardize = TRUE)
+
+# Calculate the adjusted residuals using GARCH parameters
+garch.resid <- garch.standardized.resid * sqrt(trucks.arima.garch.train$coef["a0"] + trucks.arima.garch.train$coef["a1"] * (garch.standardized.resid^2) + trucks.arima.garch.train$coef["b1"] * (truck.arima.fitted^2))
+
+# Adjust the ARIMA fitted values with the GARCH residuals
+truck.arima.garch.train.fitted <- truck.arima.fitted + garch.resid
+
+# Forecast future values of the time series using the ARIMA-GARCH model
+forecast_values_arima_garch <- forecast(truck.arima.garch.train.fitted, h = length(test_data))
+
+# Calculate the accuracy of the forecasted values on the training and test data using the ARIMA-GARCH model
+accuracy_values_arima_garch_train <- accuracy(truck.arima.garch.train.fitted, train_data)
+accuracy_values_arima_garch_test <- accuracy(forecast_values_arima_garch$mean, test_data)
+
+# Combine the accuracy metrics for the ARIMA-GARCH model on the training and test sets into a table
+trucks.arima.garch.train.acc <- t(cbind("train set" = accuracy_values_arima_garch_train[, c("RMSE", "MAE")], "test set" = accuracy_values_arima_garch_test[, c( "RMSE", "MAE")]))
+trucks.arima.garch.train.acc %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+```
+
+### Linear Regression Model
+
+We will now fit a linear regression model to the trucks time series data, incorporating trend and seasonal components. This model will help us understand the impact of time and seasonality on the number of moving truck permits. Once we have the results of this linear regression model, we will compare its performance with the other models we've analyzed, such as Seasonal ARIMA, Holt-Winters, and GARCH-improved models. 
+```{r, echo=FALSE,fig.align='center',warning=FALSE, message=FALSE}
+trucks.tslm <- tslm(trucks.monthly.ts ~ trend + season)
+coefficients_summary <- summary(trucks.tslm)$coefficients
+
+coefficients_df <- data.frame(
+  Coefficient = rownames(coefficients_summary),
+  Estimate = coefficients_summary[, "Estimate"],
+  `Std. Error` = coefficients_summary[, "Std. Error"],
+  `t value` = coefficients_summary[, "t value"],
+  `Pr(>|t|)` = coefficients_summary[, "Pr(>|t|)"]
+)
+
+coefficients_df %>%
+  kable("html", digits = 4, align = "c", col.names = c("Coefficient", "Estimate", "Std. Error", "t value", "Pr(>|t|)")) %>%
+  kable_styling("basic", full_width = FALSE)
+```
+#### Accuracy
+```{r, echo=FALSE,fig.align='center',warning=FALSE, message=FALSE}
+trucks.tslm.acc = accuracy(trucks.tslm)
+trucks.tslm.acc = t(trucks.tslm.acc[, c("RMSE", "MAE")])
+trucks.tslm.acc %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+```
+
+The output of the linear regression model shows that both the trend and seasonal components have significant effects on the number of moving truck permits. The trend coefficient (4.0260) suggests that there is a gradual increase in the number of permits over time, with an estimated 4.026 permits added each month. The positive t-value (6.696) and very low p-value (7.28e-10) indicate that this trend component is statistically significant.
+
+The seasonal components display varying levels of impact on the number of permits. For example, season 5 (May) has a substantial positive effect (1088.6622), while other months have smaller or even negative effects, such as season 2 (February) with an estimate of -32.2987. The p-values of some seasonal components are below the 0.05 significance level, indicating that these months have a statistically significant effect on the number of truck permits. However, some months have higher p-values, which means the effect of seasonality for those months may not be as significant.
+
+The adjusted R-squared value (0.9296) suggests that approximately 92.96% of the variation in the number of truck permits can be explained by the trend and seasonal components in the linear regression model. The residual standard error (265.4) provides an estimate of the average difference between the actual and predicted number of truck permits.
+
+#### Testing-Training
+```{r, echo=FALSE,fig.align='center',warning=FALSE, message=FALSE}
+trucks.tslm.train <- tslm(train_data ~ trend + season)
+
+linear_forecast <- forecast(trucks.tslm.train, h = length(test_data))
+
+trucks.tslm.train.acc = accuracy(linear_forecast, test_data) 
+trucks.tslm.train.acc = trucks.tslm.train.acc[, c("RMSE", "MAE")]
+rownames(trucks.tslm.train.acc) <- c("train set", "test set")
+trucks.tslm.train.acc%>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+```
+
+
+### Seasonal Naive 
+
+Seasonal Naive Prediction Strategy would be appropriate for our data set given the seasonality and non-constant level observed.This model will serve as a benchmark for the rest of the models.
+
+#### Full data model
+```{r, echo=FALSE,fig.align='center',warning=FALSE, message=FALSE}
+
+truck.snaive = snaive(trucks.monthly.ts)
+
+truck.naive.acc <- t(accuracy(truck.snaive)[, c("RMSE", "MAE")])
+
+truck.naive.acc %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+```
+#### Training-Testing
+
+```{r, echo=FALSE,fig.align='center',warning=FALSE, message=FALSE}
+
+truck.naive.train <- snaive(train_data, h = length(test_data))
+
+forecast_values_naive <- forecast(truck.naive.train, h = length(test_data))
+
+accuracy_values_naive_train <- accuracy(fitted(truck.naive.train), train_data)
+accuracy_values_naive_test <- accuracy(forecast_values_naive$mean, test_data)
+
+truck.naive.train.acc <- t(cbind("train set" = accuracy_values_naive_train[, c("RMSE", "MAE")], "test set" = accuracy_values_naive_test[, c("RMSE", "MAE")]))
+colnames(truck.naive.train.acc) <- c("RMSE", "MAE")
+rownames(truck.naive.train.acc) <- c("train set", "test set")
+
+truck.naive.train.acc %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+
+
+
+```
+
+
+
+
+
+### Neural Network Model
+
+We will now train a Neural Network Autorregressive model, model can be a suitable choice for predicting the number of permits for moving trucks due to its ability to capture non-linear relationships, seasonality, and autoregressive input within a flexible architecture. The demand for moving truck permits may be influenced by complex interactions of factors like economic conditions, seasonal patterns, and regional influences. NNAR models can accommodate these complexities, offering a tailored approach to modeling the specific characteristics of the moving truck permits time series. However, it is crucial to compare the performance of the NNAR model against other models, such as ARIMA, Holt-Winters, Linear Regrssion, and seasonal naive methods, to ensure accurate and reliable forecasts for the specific problem at hand.
+
+First, we will train a NNAR model using data up to 2021 and test it with data from subsequent years to find the best architecture that reduces the test data RMSE and MAE on the test data. 
+
+#### NNAR Output
+```{r echo=FALSE}
+set.seed(1234)
+
+trucks.nnar.train <- nnetar(train_data, P=3, size = 5, repeats = 5000) # 5000
+forecast_test <- forecast(trucks.nnar.train, h = length(test_data))
+# Calculate the forecast accuracy
+
+nnar_output <- data.frame(
+  Parameter = c("Model", "Repeats", "Network Structure", "Number of Weights", "Estimated Variance"),
+  Value = c("NNAR(3,3,5)[12]", "5000", "6-5-1", "41", "3825")
+)
+nnar_output <- kable(nnar_output, caption = "Neural Network Autoregression", digits = 2)
+kable_styling(nnar_output, full_width = FALSE)
+```
+
+
+#### NNAR Model Architecture
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+input_nodes_trucks <- trucks.nnar.train$p + trucks.nnar.train$P
+hidden_nodes_trucks <- trucks.nnar.train$size
+output_nodes_trucks <- 1
+```
+
+
+```{r, echo=FALSE,fig.align='center',warning=FALSE, message=FALSE}
+
+# Create a dummy dataset to create a neural network with the same structure as the NNAR model
+dummy_data <- data.frame(matrix(0, nrow = 1, ncol = input_nodes_trucks + output_nodes_trucks))
+colnames(dummy_data) <- c(paste("X", 1:input_nodes_trucks, sep = ""), "Output")
+
+# Train a dummy neural network with the same structure as the NNAR model
+dummy_nn <- neuralnet(Output ~ ., data = dummy_data, hidden = hidden_nodes_trucks, linear.output = TRUE, algorithm = "backprop", learningrate = 0.01, stepmax = 1000)
+
+# Plot the dummy neural network
+plot(dummy_nn, rep = "best", fill = "aquamarine2", cex = 0.8, lwd = 0.2, show.weights = FALSE, dimension = 5)
+
+```
+The NNAR(3,3,5)[12] model is an ensemble of 5000 neural networks designed to capture both autoregressive and seasonal patterns in the data, with a yearly seasonality. The model has three autoregressive inputs **(p=3)** and three seasonal inputs **(P=3)** from the past 12 months, making a total of six input nodes. Additionally, the model has a hidden layer containing five hidden nodes **(size=5)**. This NNAR model, with its architecture and ensemble approach, aims to provide a robust forecast for the number of moving truck permits while accounting for the inherent seasonality and trends in the data.
+
+#### Accuracy
+
+##### 80% of Data
+
+This is the accuracy of our NNAR model against the training and test sets:
+```{r echo=FALSE}
+
+# Calculate the accuracy measures and convert them into a data frame
+trucks.nnar.train.acc <- data.frame(accuracy(forecast_test, test_data))
+
+trucks.nnar.train.acc <- trucks.nnar.train.acc[, c("RMSE", "MAE")]
+rownames(trucks.nnar.train.acc) <- c("train set", "test set")
+trucks.nnar.train.acc = kable(trucks.nnar.train.acc)
+kable_styling(trucks.nnar.train.acc,full_width = FALSE)
+```
+This is the best architecture in terms of RMSE and MAE on the test set. Now, we will train a NNAR model using all the data.
+
+##### Full Dataset
+```{r echo=FALSE}
+trucks.nnar <- nnetar(trucks.monthly.ts, P=3, size = 5, repeats = 5000)
+trucks.nnar.acc <- accuracy(trucks.nnar)
+
+trucks.nnar.acc <- t(trucks.nnar.acc[, c("RMSE", "MAE")])
+trucks.nnar.acc = kable(trucks.nnar.acc)
+kable_styling(trucks.nnar.acc,full_width = FALSE)
+```
+
+### Model Comparison
+
+We will now compare the accuracies of the various models we've built so far using the data up to 2021. We will evaluate the performance of each model by calculating the root mean squared error (RMSE) and mean absolute error (MAE) for both the training and test sets. The models we will be comparing include the Holt-Winters model improved with GARCH, the ARIMA model improved with GARCH, the TSLM model, the SNAIVE model, and the NNAR model. By comparing the accuracy metrics of these models, we can identify which model is best suited to predict the number of moving truck permits in Boston.
+
+
+
+#### HW-GARCH:
+```{r, echo=FALSE,fig.align='center',warning=FALSE, message=FALSE}
+truck.hw.garch.train.acc %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+aggregate(trucks.monthly.ts, FUN =  )
+```
+#### ARIMA-GARCH:
+```{r, echo=FALSE,fig.align='center',warning=FALSE, message=FALSE}
+trucks.arima.garch.train.acc %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+```
+#### TSLM:
+```{r, echo=FALSE,fig.align='center',warning=FALSE, message=FALSE}
+trucks.tslm.train.acc %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+```
+
+#### SNAIVE:
+```{r, echo=FALSE,fig.align='center',warning=FALSE, message=FALSE}
+truck.naive.train.acc %>%
+  kable() %>%
+  kable_styling(full_width = FALSE)
+```
+#### NNAR:
+```{r, echo=FALSE,fig.align='center',warning=FALSE, message=FALSE}
+trucks.nnar.train.acc %>%
+  kable_styling(full_width = FALSE)
+```
+After analyzing the provided results, it appears that the HW-GARCH, ARIMA-GARCH, and NNAR models perform better than the TSLM and SNAIVE models in terms of RMSE and MAE on both the training and test sets.
+
+Both the HW-GARCH and ARIMA-GARCH models have lower RMSE and MAE values on the training set compared to the other models, indicating that they are more accurate in modeling the data.
+
+The TSLM and SNAIVE models have similar performance on the training set, with the TSLM model having slightly lower RMSE and MAE values. However, both models still have significantly higher errors compared to the HW-GARCH, ARIMA-GARCH, and NNAR models, suggesting that they may not be as effective in modeling the given data.
+
+The NNAR model has the lowest RMSE value on the test set among the models listed by a considerable amount and ranks second on MAE on the test set compared to the HW-GARCH and ARIMA-GARCH models. This could indicate that it is a strong contender for being the best model for forecasting the number of permits.
+
+### Forecasts
+
+Based on the significant performance difference between the HW-GARCH, ARIMA-GARCH, and NNAR models compared to the TSLM and SNAIVE models, it would be reasonable to exclude the TSLM and SNAIVE models from further consideration for forecasting. Therefore, it would be appropriate to use only the HW-GARCH, ARIMA-GARCH, and NNAR models for making forecasts based on the provided results.
+
+However, it's important to note that the performance of these models on the training and test sets may not be fully indicative of their performance on unseen data in the future. Therefore, to ensure the best possible forecasting accuracy, we will use the models we have built using all the available data, rather than splitting the data into training and testing sets.
+
+### In-Sample Comparison
+
+```{r, echo=FALSE,fig.align='center',warning=FALSE, message=FALSE}
+
+truckfig = autoplot(trucks.monthly.ts,  colour="black", series = "Original Data") +
+  autolayer(truck.hw.garch.fitted, series = "HW-GARCH")  +
+  autolayer(truck.arima.garch.fitted, series = "SARIMA-GARCH")  +    autolayer(fitted(trucks.nnar), series = "NNAR")+
+  ggtitle("Model Comparison") +ylab("Number of permits issued")+xlab("Year")
+print(truckfig)
+```
+
+### Forecasts Comparison
+
+#### SARIMA-GARCH/NNAR
+```{r, echo=FALSE,fig.align='center',warning=FALSE, message=FALSE}
+hw_garch_fcst <- forecast(truck.hw.garch.fitted, h = 12)
+arima_garch_fcst <- forecast(truck.arima.garch.fitted, h = 12)
+nnar_fcst <- forecast(trucks.nnar, h = 12)
+
+truckfig <- autoplot(trucks.monthly.ts,  colour = "black", series = "Original Data") +
+  autolayer(arima_garch_fcst$mean, series = "ARIMA-GARCH Forecast")  +
+  autolayer(nnar_fcst, series = "NNAR Forecast") +
+  ggtitle("Model Comparison") + ylab("Number of permits issued") + xlab("Year")
+
+print(truckfig)
+
+```
+
+#### HW-GARCH/NNAR
+```{r, echo=FALSE,fig.align='center',warning=FALSE, message=FALSE}
+# Generate one-year forecasts for each model
+hw_garch_fcst <- forecast(truck.hw.garch.fitted, h = 12)
+arima_garch_fcst <- forecast(truck.arima.garch.fitted, h = 12)
+nnar_fcst <- forecast(trucks.nnar, h = 12)
+
+
+truckfig <- autoplot(trucks.monthly.ts,  colour = "black", series = "Original Data") +
+  autolayer(hw_garch_fcst$mean, series = "HW-GARCH Forecast")  +
+  autolayer(nnar_fcst, series = "NNAR Forecast") +
+  ggtitle("Model Comparison") + ylab("Number of permits issued") + xlab("Year")
+
+print(truckfig)
+```
+
+### Conclusion
+
+
+In this study, we analyzed the City of Boston's Moving Truck Permits dataset to gain insights into the transportation patterns of commercial and non-commercial trucks throughout the city. We observed seasonality and an increasing trend in the number of permits issued, with higher numbers during summer months and lower numbers during winter months, as well as a noticeable impact of the COVID-19 pandemic on permit issuance in 2020.
+
+Through a rigorous comparison of various forecasting models, including exponential smoothing models, ARIMA, linear regression, and neural networks, we identified the HW-GARCH, ARIMA-GARCH, and NNAR models as the most accurate for predicting the future issuance of moving truck permits in Boston. We excluded the TSLM and SNAIVE models from further consideration due to their comparatively weaker performance.
+
+While the HW-GARCH, ARIMA-GARCH, and NNAR models demonstrated strong performance on the training and test sets, it is essential to acknowledge that their accuracy on unseen data may vary. Therefore, to optimize forecasting accuracy, we recommend using models built with all the available data rather than splitting the data into training and testing sets.
+
+By identifying the most suitable modeling approach for the Moving Truck Permits dataset, this study provides valuable insights that can aid researchers and policymakers in making informed decisions about transportation planning and resource allocation in the City of Boston. Ultimately, these findings can contribute to the development of strategies to improve transportation infrastructure and alleviate traffic congestion, enhancing the overall quality of life for Boston residents.
+
+
