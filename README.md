@@ -26,7 +26,7 @@ We employed several time series models for our analysis:
 - Seasonal Naive Prediction Strategy (SNAIVE)
 - Neural Network Autoregression (NNAR)
   
-Post analysis, the HW-GARCH, ARIMA-GARCH, and NNAR models stood out in - - - terms of performance, showcasing promising results for forecasting.
+Post analysis, the HW-GARCH, ARIMA-GARCH, and NNAR models stood out in terms of performance, showcasing promising results for forecasting.
 
 ### Conclusion:
 Through our study, we have presented pivotal insights and forecasting techniques beneficial for researchers and policymakers in Boston. The findings from our analysis can significantly influence transportation strategies, subsequently enhancing urban planning and residents' quality of life.
